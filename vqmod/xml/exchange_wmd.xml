@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<modification>
+    <id>exchange_wmd</id>
+    <version>1.0</version>
+    <vqmver>2.x</vqmver>
+    <author>www.wmd.ru</author>
+	
+	<file name="admin/model/catalog/category.php">
+		<operation error="skip">
+			<search position="after"><![CDATA[public function deleteCategory]]></search>
+			<add><![CDATA[
+		$this->db->query("DELETE FROM " . DB_PREFIX . "category_to_wmd WHERE category_id = '" . (int)$category_id . "'");
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="admin/model/catalog/product.php">
+		<operation error="skip">
+			<search position="after"><![CDATA[public function deleteProduct]]></search>
+			<add><![CDATA[
+		$this->db->query("DELETE FROM " . DB_PREFIX . "product_to_wmd WHERE product_id = '" . (int)$product_id . "'");
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="admin/model/sale/order.php">
+		<operation error="skip">
+			<search position="after"><![CDATA[public function deleteOrder]]></search>
+			<add><![CDATA[
+		if($this->config->get('exchange_wmd_status')){
+			require_once(DIR_SYSTEM . 'wmd.class.php');
+			$wmd = new WMD($this->config->get('exchange_wmd_id_user'), $this->config->get('exchange_wmd_email'), $this->config->get('exchange_wmd_api_key'));
+					
+			$orders = array();
+			$order_query = $this->db->query("SELECT id_order FROM `" . DB_PREFIX . "order_to_wmd` WHERE order_id = '" . (int)$order_id . "'");
+			if(isset($order_query->row['id_order'])){
+				$orders[] = array(
+					'id_order' 		=> $order_query->row['id_order'],
+					'cancel_reason' => 'deleted'
+				);
+				
+				$wmd_order = $wmd->OrdersCancel($orders);
+				
+				if(isset($wmd_order['data']['0']['id_order'])){
+					$this->db->query("DELETE FROM `" . DB_PREFIX . "order_to_wmd` WHERE id_order = '" . (int)$wmd_order['data']['0']['id_order'] . "'");
+				}
+			}		
+		}
+			]]></add>
+		</operation>
+		<operation error="skip">
+			<search position="after"><![CDATA[public function addOrderHistory]]></search>
+			<add><![CDATA[
+			if($this->config->get('exchange_wmd_status')){
+				$order_info = $this->getOrder($order_id);
+				require_once(DIR_SYSTEM . 'wmd.class.php');
+				$wmd = new WMD($this->config->get('exchange_wmd_id_user'), $this->config->get('exchange_wmd_email'), $this->config->get('exchange_wmd_api_key'));
+				
+				$exchange_wmd_order_status = $this->config->get('exchange_wmd_order_status');
+				if($exchange_wmd_order_status['cancel'] == $data['order_status_id'] && $order_info['order_status_id'] != $exchange_wmd_order_status['cancel']){
+					$orders = array();
+					$order_query = $this->db->query("SELECT id_order FROM `" . DB_PREFIX . "order_to_wmd` WHERE order_id = '" . (int)$order_id . "'");
+					if(isset($order_query->row['id_order'])){
+						$orders[] = array(
+							'id_order' 		=> $order_query->row['id_order'],
+							'cancel_reason' => 'cancelled'
+						);
+						
+						$wmd_order = $wmd->OrdersCancel($orders);
+						
+						if(isset($wmd_order['data']['0']['id_order'])){
+							$this->db->query("DELETE FROM `" . DB_PREFIX . "order_to_wmd` WHERE id_order = '" . (int)$wmd_order['data']['0']['id_order'] . "'");
+						}
+					}
+				}
+			}
+
+			$status_to_send = $this->config->get('exchange_wmd_send_status');
+
+			if ($this->config->get('exchange_wmd_status') && $status_to_send) {
+				if ($data['order_status_id'] == $status_to_send) {
+					$order_to_wmd_query = $this->db->query('SELECT * FROM ' . DB_PREFIX . 'order_to_wmd WHERE order_id = ' . $order_info['order_id']);
+
+					if (!$order_to_wmd_query->num_rows) {
+						$wmd = new WMD($this->config->get('exchange_wmd_id_user'), $this->config->get('exchange_wmd_email'), $this->config->get('exchange_wmd_api_key'));
+						$goods = array();
+						$product_query = $this->db->query("SELECT p2w.id_good, op.quantity FROM `" . DB_PREFIX . "product_to_wmd` p2w LEFT JOIN `" . DB_PREFIX . "order_product` op ON(op.product_id = p2w.product_id) WHERE op.order_id = '" . (int)$order_id . "'");
+						foreach($product_query->rows as $product){
+							$goods[] = array(
+								'id_good' => $product['id_good'],
+								'count'	  => $product['quantity']
+							);
+						}
+
+						$wmd_order = $wmd->AddOrder($goods);
+
+						if(!empty($wmd_order['data']['id_order'])){
+							$this->db->query("INSERT INTO " . DB_PREFIX . "order_to_wmd SET order_id = '" . (int)$order_id . "', id_order = '" . (int)$wmd_order['data']['id_order'] . "'");
+						}
+					}
+				}
+			}
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="system/library/cart.php">
+		<operation error="skip">
+			<search position="after"><![CDATA[public function add]]></search>
+			<add><![CDATA[
+		if($this->config->get('exchange_wmd_status')){
+			require_once(DIR_SYSTEM . 'wmd.class.php');
+			$wmd = new WMD($this->config->get('exchange_wmd_id_user'), $this->config->get('exchange_wmd_email'), $this->config->get('exchange_wmd_api_key'));
+			$query = $this->db->query("SELECT p2w.id_good FROM `" . DB_PREFIX . "product_to_wmd` p2w LEFT JOIN `" . DB_PREFIX . "product` p ON(p.product_id = p2w.product_id) WHERE p.product_id = '" . (int)$product_id . "'");
+
+			if(isset($query->row['id_good'])){
+				$available = $wmd->GetGoodsAvailable($query->row['id_good'], 0, 1);
+				if(isset($available['data'])){
+					$this->db->query("UPDATE " . DB_PREFIX . "product SET quantity = '" . (int)$available['data']['0']['available'] . "' WHERE product_id = '" . (int)$product_id . "'");
+				}
+			}
+		}
+			]]></add>
+		</operation>
+	</file>
+	
+	<file name="catalog/model/checkout/order.php">
+		<operation>
+			<search position="after"><![CDATA[if ($order_info && !$order_info['order_status_id']) {]]></search>
+			<add><![CDATA[
+				$status_to_send = $this->config->get('exchange_wmd_send_status');
+			
+				if($this->config->get('exchange_wmd_status') && !$status_to_send){
+					require_once(DIR_SYSTEM . 'wmd.class.php');
+					$wmd = new WMD($this->config->get('exchange_wmd_id_user'), $this->config->get('exchange_wmd_email'), $this->config->get('exchange_wmd_api_key'));
+					$goods = array();
+					$product_query = $this->db->query("SELECT p2w.id_good, op.quantity FROM `" . DB_PREFIX . "product_to_wmd` p2w LEFT JOIN `" . DB_PREFIX . "order_product` op ON(op.product_id = p2w.product_id) WHERE op.order_id = '" . (int)$order_id . "'");
+					foreach($product_query->rows as $product){
+						$goods[] = array(
+							'id_good' => $product['id_good'],
+							'count'	  => $product['quantity']
+						);
+					}
+					
+					$wmd_order = $wmd->AddOrder($goods);
+					
+					if(!empty($wmd_order['data']['id_order'])){
+						$this->db->query("INSERT INTO " . DB_PREFIX . "order_to_wmd SET order_id = '" . (int)$order_id . "', id_order = '" . (int)$wmd_order['data']['id_order'] . "'");
+					}
+				}
+			]]></add>
+		</operation>
+	</file>
+	
+</modification>
